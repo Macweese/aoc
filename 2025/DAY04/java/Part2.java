@@ -4,15 +4,16 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-private static final int LF = 10;
-private static final int MAX_ADJACENT = 4;
-private static final byte OBJECT_BIT = 6; // @ >> 6 = 1, . >> 6 = 0
-private static final byte EMPTY_BYTE = 46; // '.'
-private static final byte OBJECT_BYTE = 64; // '@'
+private static final byte LF = 10;
 
 private static final String COLOR_RED = "\033[1;91m";
 private static final String COLOR_RESET = "\u001B[0m";
 
+// Deletion is monotone: removing a cell never makes another cell less deletable,
+// so the synchronous-rounds fixpoint equals the asynchronous cascade. That kills the
+// "rescan the whole grid every generation" loop entirely: seed a worklist with every
+// initially deletable cell, then propagate neighbor-count decrements.
+// Total work: O(cells + 8 * deletions) instead of O(rounds * cells).
 void main(String[] args)
 {
 	if (args.length == 0)
@@ -20,73 +21,79 @@ void main(String[] args)
 		return;
 	}
 
-	byte[] raw = args[0].getBytes();
-	int size = raw.length;
+	final byte[] raw = args[0].getBytes();
+	final int size = raw.length;
 
 	int cols = 0;
 	while (cols < size && raw[cols] != LF)
 	{
 		cols++;
 	}
-	int rows = (size + 1) / (cols + 1);
+	final int rows = (size + 1) / (cols + 1);
 
-	int W = cols + 2;
-	int H = rows + 2;
+	final int W = cols + 2;
+	final byte[] alive = new byte[(rows + 2) * W];
+	final byte[] cnt = new byte[(rows + 2) * W];
+	final int[] stack = new int[rows * cols];
+	int sp = 0;
 
-	// Double buffering
-	byte[] src = new byte[H * W];
-	byte[] dst = new byte[H * W];
-
-	for (int i = 0; i < src.length; i++)
+	// '@' = 0x40 (bit 6 set), '.' = 0x2E (bit 6 clear) -> occupancy without compares.
+	for (int y = 0; y < rows; y++)
 	{
-		src[i] = EMPTY_BYTE;
-		dst[i] = EMPTY_BYTE;
-	}
-
-	for (int r = 0; r < rows; r++)
-	{
-		System.arraycopy(raw, r * (cols + 1), src, (r + 1) * W + 1, cols);
-	}
-
-	long totalDeletions = 0;
-	int cycleDeletions;
-
-	do
-	{
-		cycleDeletions = 0;
-
-		for (int y = 1; y <= rows; y++)
+		final int in = y * (cols + 1);
+		final int out = (y + 1) * W + 1;
+		for (int x = 0; x < cols; x++)
 		{
-			int rowOffset = y * W;
-			for (int x = 1; x <= cols; x++)
+			alive[out + x] = (byte) ((raw[in + x] >>> 6) & 1);
+		}
+	}
+
+	// Initial live-neighbor counts (sentinel ring keeps this branchless).
+	for (int y = 1; y <= rows; y++)
+	{
+		final int base = y * W;
+		for (int x = 1; x <= cols; x++)
+		{
+			final int i = base + x;
+			cnt[i] = (byte) (alive[i - W - 1] + alive[i - W] + alive[i - W + 1]
+				+ alive[i - 1] + alive[i + 1]
+				+ alive[i + W - 1] + alive[i + W] + alive[i + W + 1]);
+		}
+	}
+
+	long totalDeletions = 0L;
+
+	// Seed: everything deletable in round one.
+	for (int y = 1; y <= rows; y++)
+	{
+		final int base = y * W;
+		for (int x = 1; x <= cols; x++)
+		{
+			final int i = base + x;
+			if (alive[i] == 1 && cnt[i] < 4)
 			{
-				int idx = rowOffset + x;
-
-				int isObject = src[idx] >> OBJECT_BIT;
-				// Unrolled 8-neighbor dxdy iterator
-				int adjacent = (src[idx - W - 1] >> OBJECT_BIT)
-					+ (src[idx - W] >> OBJECT_BIT)
-					+ (src[idx - W + 1] >> OBJECT_BIT)
-					+ (src[idx - 1] >> OBJECT_BIT)
-					+ (src[idx + 1] >> OBJECT_BIT)
-					+ (src[idx + W - 1] >> OBJECT_BIT)
-					+ (src[idx + W] >> OBJECT_BIT)
-					+ (src[idx + W + 1] >> OBJECT_BIT);
-
-				int isDeletable = isObject & ((((MAX_ADJACENT - 1) - adjacent) >>> 31) ^ 1);
-				int mask = -isDeletable;
-				dst[idx] = (byte) ((EMPTY_BYTE & mask) | (src[idx] & ~mask));
-				cycleDeletions += isDeletable;
+				alive[i] = 0;
+				stack[sp++] = i;
+				totalDeletions++;
 			}
 		}
+	}
 
-		// Swap the buffers
-		byte[] temp = src;
-		src = dst;
-		dst = temp;
+	// Cascade: each deletion decrements its neighbors; a live cell crossing 4 -> 3
+	// becomes doomed exactly once.
+	while (sp > 0)
+	{
+		final int i = stack[--sp];
+		int j;
+		j = i - W - 1; if (--cnt[j] == 3 && alive[j] == 1) { alive[j] = 0; stack[sp++] = j; totalDeletions++; }
+		j = i - W;     if (--cnt[j] == 3 && alive[j] == 1) { alive[j] = 0; stack[sp++] = j; totalDeletions++; }
+		j = i - W + 1; if (--cnt[j] == 3 && alive[j] == 1) { alive[j] = 0; stack[sp++] = j; totalDeletions++; }
+		j = i - 1;     if (--cnt[j] == 3 && alive[j] == 1) { alive[j] = 0; stack[sp++] = j; totalDeletions++; }
+		j = i + 1;     if (--cnt[j] == 3 && alive[j] == 1) { alive[j] = 0; stack[sp++] = j; totalDeletions++; }
+		j = i + W - 1; if (--cnt[j] == 3 && alive[j] == 1) { alive[j] = 0; stack[sp++] = j; totalDeletions++; }
+		j = i + W;     if (--cnt[j] == 3 && alive[j] == 1) { alive[j] = 0; stack[sp++] = j; totalDeletions++; }
+		j = i + W + 1; if (--cnt[j] == 3 && alive[j] == 1) { alive[j] = 0; stack[sp++] = j; totalDeletions++; }
+	}
 
-		totalDeletions += cycleDeletions;
-	} while (cycleDeletions > 0);
-
-	IO.println(String.format("Result: %s%s%s deletions", COLOR_RED, totalDeletions, COLOR_RESET));
+	IO.println("Result: " + COLOR_RED + totalDeletions + COLOR_RESET + " deletions");
 }

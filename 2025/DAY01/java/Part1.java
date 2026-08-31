@@ -4,17 +4,31 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+// Zero-allocation single-pass byte scan: no split(), no substring(), no parseInt(),
+// no per-line getBytes(). Branchless direction decode, branchless wrap, branchless zero-detect.
 void main(String[] ops)
 {
-	int i = 50;
+	final byte[] b = ops[0].getBytes();
+	final int n = b.length;
+	int pos = 50;
 	int c = 0;
 
-	for (var op : ops[0].split("\n"))
+	for (int i = 0; i < n; )
 	{
-		i = (i + (Integer.parseInt(op.substring(1)) * (op.getBytes()[0] / 3 - 26))) % 100;
-		c += ((i | -i) >> 31) + 1;
+		// 'L' (0x4C) has bit 3 set, 'R' (0x52) does not -> maps to -1 / +1 without a branch
+		final int dir = 1 - ((b[i++] & 8) >> 2);
+		int v = 0;
+		for (int d; i < n && (d = b[i] - '0') >= 0; i++)
+		{
+			v = v * 10 + d;
+		}
+		i++; // skip LF
+
+		pos += dir * (v % 100);
+		pos += 100 & (pos >> 31);        // wrap negative into [0,100)
+		pos -= 100 & ((99 - pos) >> 31); // wrap overflow into [0,100)
+		c += ((pos | -pos) >>> 31) ^ 1;  // +1 iff pos == 0
 	}
+
 	IO.println("Password:\n" + c);
 }
-
-//void main(String[]o){int c,i=50;for(var a:o[0].split("\n")){i=(i+(Integer.parseInt(a.substring(1))*(a.getBytes()[0]/3-26)))%100;c+=((i|-i)>>31)+1;}IO.print(c);}

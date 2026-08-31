@@ -4,133 +4,102 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-import com.macweese.utils.FastIO;
-
-private static long result = 0L;
-private static final List<List<String>> DATA = new ArrayList<>();
-
-void main() throws IOException
+// Cephalopod math without the List<List<String>> forest: one row-major pass feeds
+// per-character-column Horner accumulators (digits are most significant at the top),
+// then a single left-to-right fold over the columns splits problems on blank columns
+// and applies each problem's operator with a branchless masked select.
+// + and * are commutative, so right-to-left reading order is irrelevant.
+void main(String[] args)
 {
-	FastIO io = new FastIO(getClass().getResource("INPUT_DAY06_2.txt").getPath(), "OUTPUT_DAY06_2.txt");
-	final String input = io.readFile();
+	final byte[] b = args[0].getBytes();
+	final int n = b.length;
 
-	preprocess(input);
-	process(DATA);
-
-	io.print("Result: " + result);
-	io.close();
-	System.exit(0);
-}
-
-static void preprocess(String input)
-{
-	String[] lines = input.split("\n");
-
-	int lastLine = lines.length - 1;
-	String operandLine = lines[lastLine];
-	int columnStart = 0;
-	int columnEnd = 0;
-
-	outer:
-	for (int start = columnEnd; start < operandLine.length(); start++)
+	int end = n;
+	while (end > 0 && b[end - 1] == '\n')
 	{
-		if (operandLine.charAt(start) == '+' || operandLine.charAt(start) == '*')
-		{
-			columnStart = start;
-		}
-
-		for (int end = start + 1; end < lines[0].length(); end++)
-		{
-			if (end >= operandLine.length())
-			{
-				columnEnd = lines[0].length();
-				break;
-			}
-			if (operandLine.charAt(end) == '+' || operandLine.charAt(end) == '*')
-			{
-				columnEnd = end;
-				break;
-			}
-		}
-
-		List<String> columnSections = new ArrayList<>();
-		for (int row = 0; row <= lastLine; row++)
-		{
-			if (columnStart >= columnEnd || columnStart >= lines[row].length())
-			{
-				break outer;
-			}
-			columnSections.add(lines[row].substring(columnStart, Math.min(lines[row].length(), columnEnd)));
-		}
-		columnStart = start = columnEnd - 1;
-		DATA.add(columnSections);
+		end--;
 	}
-}
-
-static void process(List<List<String>> data)
-{
-	for (int col = 0; col < data.size(); col++)
+	int opStart = end;
+	while (opStart > 0 && b[opStart - 1] != '\n')
 	{
-		boolean multiply = false;
-		long value = 0L;
-		int maxIndex = 0;
-		for (int row = 0; row < data.get(col).size(); row++)
-		{
-			maxIndex = Math.max(maxIndex, data.get(col).get(row).length());
-		}
-
-		List<Long> arguments = new ArrayList<>();
-		for (int index = 0; index < maxIndex; index++)
-		{
-			boolean emptyColumn = true;
-			int weight = data.get(col).size() - 1;
-			for (int row = 0; row < data.get(col).size() - 1; row++)
-			{
-				if (index > data.get(col).get(row).length())
-				{
-					continue;
-				}
-
-				char c = data.get(col).get(row).charAt(index);
-				weight -= 1;
-
-				emptyColumn = false;
-
-				if (c == ' ')
-				{
-					value /= 10;
-				}
-				else
-				{
-					value += (long) (Character.getNumericValue(c) * Math.pow(10, weight));
-				}
-			}
-
-			String op = data.get(col).getLast().trim();
-			multiply = op.equals("*");
-
-			// redundant double conditions
-			if (!emptyColumn && value != 0)
-			{
-				arguments.add(value);
-			}
-			value = 0L;
-		}
-
-		long resolution = multiply ? 1L : 0L;
-		for (long arg : arguments)
-		{
-			if (multiply)
-			{
-				resolution *= arg;
-			}
-			else
-			{
-				resolution += arg;
-			}
-		}
-
-		result += resolution;
-		arguments.clear();
+		opStart--;
 	}
+
+	// Widest line determines the column count.
+	int width = 0;
+	int lineLen = 0;
+	for (int i = 0; i < n; i++)
+	{
+		if (b[i] == '\n')
+		{
+			width = Math.max(width, lineLen);
+			lineLen = 0;
+		}
+		else
+		{
+			lineLen++;
+		}
+	}
+	width = Math.max(width, lineLen);
+
+	final long[] colVal = new long[width];
+	final byte[] colHasDigit = new byte[width];
+
+	int x = 0;
+	for (int i = 0; i < opStart; i++)
+	{
+		final byte c = b[i];
+		if (c == '\n')
+		{
+			x = 0;
+			continue;
+		}
+		final int d = c - '0';
+		if (d >= 0)
+		{
+			colVal[x] = colVal[x] * 10 + d;
+			colHasDigit[x] = 1;
+		}
+		x++;
+	}
+
+	final int opLen = end - opStart;
+	long result = 0L;
+	long sum = 0L;
+	long prod = 1L;
+	long mulMask = 0L;
+	boolean inProblem = false;
+
+	for (int c = 0; c < width; c++)
+	{
+		final int oc = c < opLen ? b[opStart + c] : ' ';
+		final boolean isOp = oc == '*' || oc == '+';
+		if (colHasDigit[c] == 1 || isOp)
+		{
+			inProblem = true;
+			if (colHasDigit[c] == 1)
+			{
+				sum += colVal[c];
+				prod *= colVal[c];
+			}
+			if (isOp)
+			{
+				// '*' = 0x2A (even), '+' = 0x2B (odd)
+				mulMask = -(long) ((oc & 1) ^ 1);
+			}
+		}
+		else if (inProblem)
+		{
+			result += (mulMask & prod) | (~mulMask & sum);
+			sum = 0L;
+			prod = 1L;
+			inProblem = false;
+		}
+	}
+	if (inProblem)
+	{
+		result += (mulMask & prod) | (~mulMask & sum);
+	}
+
+	IO.println("Result: " + result);
 }

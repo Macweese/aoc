@@ -4,49 +4,59 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-private static final int MIN = 0;
-private static final int MAX = 1;
-
+// Zero-allocation byte-scan parse of the range section only (the ID section is
+// irrelevant here, so parsing stops at the blank line); intervals packed as
+// (min << 11 | index) into one long[] for the JDK's primitive dual-pivot sort;
+// the merged span is accumulated in the same sweep - no ArrayList, no boxing,
+// no materialized merged list.
 void main(String[] args)
 {
-	final String[] input = args[0].split("\n\n");
+	final byte[] b = args[0].getBytes();
 
-	List<long[]> intervals = new ArrayList<>();
-	for (String interval : input[0].split("\n"))
+	long[] maxs = new long[2048];
+	long[] packed = new long[2048];
+	int cnt = 0;
+
+	int i = 0;
+	while (b[i] != '\n')
 	{
-		int separator = interval.indexOf('-');
-		long min = Long.parseLong(interval.substring(0, separator));
-		long max = Long.parseLong(interval.substring(separator + 1));
-
-		intervals.add(new long[]{min, max});
+		long lo = 0L;
+		while (b[i] != '-')
+		{
+			lo = lo * 10 + b[i++] - '0';
+		}
+		i++;
+		long hi = 0L;
+		while (b[i] != '\n')
+		{
+			hi = hi * 10 + b[i++] - '0';
+		}
+		i++;
+		packed[cnt] = (lo << 11) | cnt;
+		maxs[cnt++] = hi;
 	}
 
-	intervals.sort(Comparator.comparingLong(i -> i[MIN]));
-	List<long[]> merged = new ArrayList<>();
-	for (long[] interval : intervals)
-	{
-		if (merged.isEmpty())
-		{
-			merged.add(interval);
-			continue;
-		}
+	java.util.Arrays.sort(packed, 0, cnt);
 
-		long[] last = merged.getLast();
-		if ((last[MAX] + 1) >= interval[MIN])
+	long span = 0L;
+	long curMin = packed[0] >>> 11;
+	long curMax = maxs[(int) (packed[0] & 2047)];
+	for (int j = 1; j < cnt; j++)
+	{
+		final long mn = packed[j] >>> 11;
+		final long mx = maxs[(int) (packed[j] & 2047)];
+		if (mn <= curMax + 1)
 		{
-			last[MAX] = Math.max(last[MAX], interval[MAX]);
+			curMax = Math.max(curMax, mx);
 		}
 		else
 		{
-			merged.add(interval);
+			span += curMax - curMin + 1;
+			curMin = mn;
+			curMax = mx;
 		}
 	}
-
-	long span = 0;
-	for (long[] interval : merged)
-	{
-		span += (interval[MAX] - interval[MIN]) + 1;
-	}
+	span += curMax - curMin + 1;
 
 	IO.println("Result: " + span);
 }

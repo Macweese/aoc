@@ -6,39 +6,48 @@
 
 private static final int DIGIT_LENGTH = 12;
 
+// Monotonic stack on a reused primitive byte[12]: each byte is pushed/popped at most
+// once (amortized O(n) per line), Horner fold replaces Math.pow, and there is no
+// java.util.Stack, no Integer boxing, no split(), no toCharArray().
 void main(String[] args)
 {
+	final byte[] b = args[0].getBytes();
+	final int n = b.length;
+	final byte[] stack = new byte[DIGIT_LENGTH];
 	long jolts = 0L;
-	for (String line : args[0].split("\n"))
+
+	int i = 0;
+	while (i < n)
 	{
-		jolts += lexMaxSub(line.toCharArray(), DIGIT_LENGTH);
+		int e = i;
+		while (e < n && b[e] != '\n')
+		{
+			e++;
+		}
+		if (e > i)
+		{
+			int top = 0;
+			for (int j = i; j < e; j++)
+			{
+				final byte c = b[j];
+				while (top > 0 && stack[top - 1] < c && e - j + top > DIGIT_LENGTH)
+				{
+					top--;
+				}
+				if (top < DIGIT_LENGTH)
+				{
+					stack[top++] = c;
+				}
+			}
+			long v = 0L;
+			for (int j = 0; j < DIGIT_LENGTH; j++)
+			{
+				v = v * 10 + (stack[j] - '0');
+			}
+			jolts += v;
+		}
+		i = e + 1;
 	}
 
 	IO.print("Result: " + jolts);
-}
-
-static private long lexMaxSub(char[] digits, int k)
-{
-	Stack<Integer> stack = new Stack<>();
-	for (int i = 0; i < digits.length; i++)
-	{
-		while (!stack.empty() && digits[i] > digits[stack.peek()] && digits.length - i + stack.size() > k)
-		{
-			stack.pop();
-		}
-		if (stack.size() < k)
-		{
-			stack.push(i);
-		}
-	}
-
-	long n = 0L;
-	char[] weightedDigits = new char[k];
-	for (int i = k - 1; i >= 0; i--)
-	{
-		weightedDigits[i] = digits[stack.pop()];
-		n += ((long) (weightedDigits[i] - ('0')) * ((long) Math.pow(10, k - (i + 1))));
-	}
-
-	return n;
 }

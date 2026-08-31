@@ -4,65 +4,34 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-//private static final String RESET = "\u001B[0m";
-//private static final String RED = "\033[0;31m";
-//private static final String GREEN = "\033[0;32m";
-//private static final String MAGENTA = "\033[0;35m";
-//private static final String CYAN = "\033[0;36m";
-//private static final String BLACK_BRIGHT = "\033[0;90m";
-//private static final String GREEN_BOLD_BRIGHT = "\033[1;92m";
-
-private static final int OFFSET = 50;
-private static final int DOMAIN = 100;
-
-//private static final StringBuilder SB = new StringBuilder();
-
-// branchless linear solve \o/
+// Branchless linear solve, now with zero-allocation byte scanning.
+// Left turns are handled in mirrored coordinates so that a zero-crossing is always
+// a plain (start + distance) / 100 quotient -> one division, no floorMod, no branches.
 void main(String[] ops)
 {
-//	boolean debug = ops.length > 1 && ops[1].equalsIgnoreCase("--debug");
-
-	int i = OFFSET;
+	final byte[] b = ops[0].getBytes();
+	final int n = b.length;
+	int pos = 50;
 	int c = 0;
 
-	for (String op : ops[0].split("\n"))
+	for (int i = 0; i < n; )
 	{
-		int delta = Integer.parseInt(op.substring(1)) * (op.getBytes()[0] / 3 - 26);
-		i += delta;
+		// 'L' (0x4C) has bit 3 set, 'R' (0x52) does not -> all-ones mask for L, 0 for R
+		final int dirMask = -((b[i++] >> 3) & 1);
+		int v = 0;
+		for (int d; i < n && (d = b[i] - '0') >= 0; i++)
+		{
+			v = v * 10 + d;
+		}
+		i++; // skip LF
 
-		int signMask = delta >> 31;
-		int zeroFlag = (((i - delta) | -(i - delta)) >>> 31) ^ 1;
-		int quantize = ((DOMAIN - i) / DOMAIN) - zeroFlag;
-//		int r = ((i / DOMAIN) & ~signMask) | (quantize & signMask);
-
-//		if (debug)
-//		{
-//			debug(i, delta, r, c);
-//		}
-
-		c += ((i / DOMAIN) & ~signMask) | (quantize & signMask);
-
-		i = Math.floorMod(i, DOMAIN);
+		final int mirror = ((-pos) >> 31) & (100 - pos);      // (100 - pos) % 100, branchless
+		final int t = ((pos & ~dirMask) | (mirror & dirMask)) + v;
+		c += t / 100;                                          // clicks landing on 0
+		final int r = t % 100;
+		final int back = ((-r) >> 31) & (100 - r);             // mirror back for L
+		pos = (r & ~dirMask) | (back & dirMask);
 	}
-
-//	if (debug)
-//	{
-//		IO.println(SB);
-//	}
 
 	IO.println("Password: " + c);
 }
-
-//private static void debug(int i, int delta, int r, int clicks)
-//{
-//	SB.append(String.format("%-8s", "Start:"))
-//		.append(String.format("%-16s", (CYAN + (i - delta) + RESET)))
-//		.append(String.format("%-8s", "Dest:"))
-//		.append(String.format("%-19s", (MAGENTA + ((i + 100) % 100) + RESET)))
-//		.append(String.format("%-8s", "Steps:"))
-//		.append(String.format("%-17s%s", (delta > 0 ? (GREEN + delta) : delta < 0 ? (RED + delta) : (BLACK_BRIGHT + delta)), RESET))
-//		.append(String.format("%-9s", "Clicks:"))
-//		.append(String.format("%-15s", (r == 0 ? (BLACK_BRIGHT + r + RESET + "   ") : (GREEN_BOLD_BRIGHT + r + RESET))))
-//		.append(String.format("%-16s", "Total Clicks:"))
-//		.append(String.format("%s%n", (r == 0 ? (BLACK_BRIGHT + clicks + RESET) : (GREEN_BOLD_BRIGHT + clicks + RESET))));
-//}

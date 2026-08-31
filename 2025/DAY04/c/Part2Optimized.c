@@ -4,220 +4,190 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-/* TODO:                                                                                         */
-/* 1. Store the grid as columns of bits in uint64_t arrays                                       */
-/* (one uint64_t holds 64 rows of one x-position).                                               */
-/*    Use three uint64_t arrays per "lane" to hold the 3-bit neighbor count vertically:          */
-/*    c0: bit 0 (1s)                                                                             */
-/*    c1: bit 1 (2s)                                                                             */
-/*    c2: bit 2 (4s)                                                                             */
+/* Branchless SWAR optimization, generation 2.                                                   */
 /*                                                                                               */
-/*    void add_vertical(uint64_t neigh, uint64_t *c0, uint64_t *c1, uint64_t *c2) {              */
-/*        uint64_t t0 = *c0 ^ neigh;                                                             */
-/*        uint64_t carry = *c0 & neigh;                                                          */
-/*        *c0 = t0;                                                                              */
-/*                                                                                               */
-/*        t0 = *c1 ^ carry;                                                                      */
-/*        carry = *c1 & carry;                                                                   */
-/*        *c1 = t0;                                                                              */
-/*                                                                                               */
-/*        *c2 ^= carry;  // Overflow into bit2 (we only need >=4)                                */
-/*    }                                                                                          */
-/*                                                                                               */
-/*    self & (c2 | other conditions if needed)                                                   */
-/*    64 rows at once per column                                                                 */
-/*                                                                                               */
-/* 2. HC SIMD + Multi-Threading                                                                  */
-/*    Use AVX-512 (512-bit vectors = 8× uint64_t lanes)                                          */
-/*        Process 512 rows × width columns per instruction                                       */
-/*        Use _mm512_loadu_epi64, shifts, AND/OR/XOR for neighbor adds                           */
-/*    Transpose storage: bit-packed columns → easy vertical ops                                  */
-/*    Multi-threading: OpenMP or std::thread across horizontal chunks                            */
-/*    Double-buffer with aligned memory (_mm_malloc)                                             */
-/*                                                                                               */
-/* 3. Cache                                                                                      */
-/*    Custom memory pools                                                                        */
-/*    Lock-free queues for active cells only (if sparsity helps)                                 */
-/*    Precomputed shift tables                                                                   */
-/*    Assembly intrinsics mixed with C++                                                         */
-/*    Cache-oblivious tiling                                                                     */
-/*                                                                                               */
-
+/* - The grid is bit-packed 64 cells per uint64_t; the 8 neighbor masks are folded               */
+/*   through a bit-sliced carry-save adder held entirely in registers (no globals),             */
+/*   so all 64 cells of a word get their ">= 4 neighbors" verdict simultaneously.               */
+/* - The grid is updated in place through two rolling row snapshots, which kills                 */
+/*   the full-size double buffer, the O(grid) memset and the buffer swap per round.             */
+/* - Settled rows are skipped: a row is re-examined only if it or a vertical                     */
+/*   neighbor changed in the previous round, so late rounds touch a handful of rows.            */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include <limits.h>
 
-/* We need 3 bits to store a max neighbor count of 8. */
-/* bit0 is the 1s place, bit1 is the 2s place, bit2 is the 4s place. */
-static uint64_t bit0;
-static uint64_t bit1;
-static uint64_t bit2;
 #define LF  10  /* Line feed */
 #define OBJ 64  /* "@" */
-#define UINT64_BITS (CHAR_BIT * sizeof(uint64_t))
 
-/* Compute kernel: */
-/* 64-set neighbor SIMD using POPCNT */
-static void
-add64(uint64_t neighbors)
-{
-	uint64_t bi0 = bit0;
-	uint64_t bi1 = bit1;
-	bit0 = bi0 ^ neighbors;
-	uint64_t carry0 = b0 & neighbors;
-	bit1 = bi1 ^ carry0;
-	/* Once bit2 is set, count is >= MAX_ADJ */
-	uint64_t carry1 = bi1 & carry0;
-	bit2 |= carry1;
-}
+/* Compute kernel: one carry-save insertion into the bit-sliced 3-bit counter. */
+#define CSA(x)                 \
+	do                         \
+	{                          \
+		carry0 = b0 & (x);     \
+		b0 ^= (x);             \
+		carry1 = b1 & carry0;  \
+		b1 ^= carry0;          \
+		b2 |= carry1;          \
+	} while (0)
 
-/* Branchless SWAR optimization */
 int
 main(int argc, char *argv[])
 {
-	uint64_t *src;
-	uint64_t *dst;
-	uint64_t *temp;
-
 	const unsigned char *data;
 	size_t dataSize;
-
-	int X;
-	int Y;
-	int size;
-	int segmentSize;
-	int y;
-	int x;
-
+	int X, Y, words, stride, x, y;
 	long totalDeletions;
 	int running;
-	long cycleBits;
 
-	int base;
-	int idx;
-	uint64_t self;
+	if (argc < 2)
+	{
+		printf("No input data provided - aborting\n");
+		return 0;
+	}
 
-	uint64_t w;
-	uint64_t e;
-	uint64_t n;
-	uint64_t s;
-	uint64_t nw;
-	uint64_t ne;
-	uint64_t sw;
-	uint64_t se;
-
-	uint64_t deleted;
-
- 	if (argc < 2)
- 	{
- 		printf("No input data provided - aborting\n");
- 		return 0;
- 	}
-
-	data = (const unsigned char *) argv[0];
-	dataSize = strlen(argv[0]);
+	data = (const unsigned char *) argv[1];
+	dataSize = strlen(argv[1]);
 
 	X = 0;
-	while (X < (int)dataSize && data[X] != LF)
+	while (X < (int) dataSize && data[X] != LF)
 	{
 		X++;
 	}
-	Y = (int)((dataSize + 1) / (X + 1));
+	Y = (int) ((dataSize + 1) / (X + 1));
 
 	/* Kernel */
-	size = (X + (UINT64_BITS - 1)) / UINT64_BITS;
+	words = (X + 63) >> 6;
 	/* Sentinel */
-	segmentSize = size + 2;
-	/* Double-buffer */
-	src = calloc((Y + 2) * segmentSize, sizeof(uint64_t));
-	dst = calloc((Y + 2) * segmentSize, sizeof(uint64_t));
+	stride = words + 2;
 
-	if (src == NULL || dst == NULL)
 	{
-		free(src);
-		free(dst);
-		return 1;
-	}
+		uint64_t *g = calloc((size_t) (Y + 2) * stride, sizeof(uint64_t));
+		/* Rolling start-of-round snapshots of the previous and current row. */
+		uint64_t *prevOrig = calloc(stride, sizeof(uint64_t));
+		uint64_t *curOrig = calloc(stride, sizeof(uint64_t));
+		unsigned char *dirty = malloc(Y + 2);
+		unsigned char *nextDirty = calloc(Y + 2, 1);
 
-	/* Bitpacking */
-	for (y = 0; y < Y; y++)
-	{
-		int yOffset = (y + 1) * segmentSize + 1;
-		for (x = 0; x < X; x++)
+		if (g == NULL || prevOrig == NULL || curOrig == NULL || dirty == NULL || nextDirty == NULL)
 		{
-			int longIdx = x / UINT64_BITS;
-			int bitIdx = x % UINT64_BITS;
-			if (data[y * (X + 1) + x] == OBJ)
-			{
-				src[yOffset + longIdx] |= ((uint64_t)1 << bitIdx);
-			}
+			free(g);
+			free(prevOrig);
+			free(curOrig);
+			free(dirty);
+			free(nextDirty);
+			return 1;
 		}
-	}
 
-	totalDeletions = 0;
-	do
-	{
-		cycleBits = 0;
-
-		for (y = 1; y <= Y; y++)
+		/* Bitpacking */
+		for (y = 0; y < Y; y++)
 		{
-			base = y * segmentSize + 1;
-
-			for (x = 0; x < size; x++)
+			const unsigned char *row = data + (size_t) y * (X + 1);
+			uint64_t *out = g + (size_t) (y + 1) * stride + 1;
+			for (x = 0; x < X; x++)
 			{
-				idx = base + x;
-				self = src[idx];
-				/* Reset */
-				bit0 = 0;
-				bit1 = 0;
-				bit2 = 0;
-
-				/* Horizontal spill handling */
-				/* Unrolled dxdy flagging */
-				w = (self >> 1) | (src[idx + 1] << (UINT64_BITS - 1));
-				e = (self << 1) | (src[idx - 1] >> (UINT64_BITS - 1));
-
-				n = src[idx - segmentSize];
-				s = src[idx + segmentSize];
-
-				nw = (n >> 1) | (src[idx - segmentSize + 1] << (UINT64_BITS - 1));
-				ne = (n << 1) | (src[idx - segmentSize - 1] >> (UINT64_BITS - 1));
-
-				sw = (s >> 1) | (src[idx + segmentSize + 1] << (UINT64_BITS - 1));
-				se = (s << 1) | (src[idx + segmentSize - 1] >> (UINT64_BITS - 1));
-
-				add64(n);
-				add64(s);
-				add64(e);
-				add64(w);
-				add64(nw);
-				add64(ne);
-				add64(sw);
-				add64(se);
-
-				deleted = self & ~bit2;
-				dst[base + x] = self & bit2;
-
-				totalDeletions += __builtin_popcountll(deleted);
-				cycleBits |= deleted;
+				out[x >> 6] |= (uint64_t) ((row[x] >> 6) & 1) << (x & 63);
 			}
 		}
 
-		running = (cycleBits != 0);
+		memset(dirty, 1, Y + 2);
+		totalDeletions = 0;
+		running = 1;
 
-		/* Swap & clear buffers */
-		temp = src;
-		src = dst;
-		dst = temp;
-		memset(dst, 0, (Y + 2) * segmentSize * sizeof(uint64_t));
-	} while (running);
+		while (running)
+		{
+			int prevProcessed = 0;
+			running = 0;
 
-	printf("Result: %ld\n", totalDeletions);
+			for (y = 1; y <= Y; y++)
+			{
+				uint64_t *base;
+				const uint64_t *north;
+				const uint64_t *south;
+				int rowChanged;
+				uint64_t *swp;
 
-	free(src);
-	free(dst);
+				if (!(dirty[y - 1] | dirty[y] | dirty[y + 1]))
+				{
+					prevProcessed = 0;
+					continue;
+				}
+
+				base = g + (size_t) y * stride;
+				memcpy(curOrig, base, stride * sizeof(uint64_t));
+
+				/* Row y-1 originals: its snapshot if it was rewritten this round,   */
+				/* otherwise it is untouched and can be read straight from the grid. */
+				north = prevProcessed ? prevOrig : base - stride;
+				south = base + stride; /* row y+1 is untouched this round */
+				rowChanged = 0;
+
+				for (x = 1; x <= words; x++)
+				{
+					uint64_t self = curOrig[x];
+					uint64_t nRow = north[x];
+					uint64_t sRow = south[x];
+
+					/* Horizontal spill handling */
+					/* Unrolled neighbor alignment ; would be dxdy loop */
+					uint64_t w = (self << 1) | (curOrig[x - 1] >> 63);
+					uint64_t e = (self >> 1) | (curOrig[x + 1] << 63);
+					uint64_t nw = (nRow << 1) | (north[x - 1] >> 63);
+					uint64_t ne = (nRow >> 1) | (north[x + 1] << 63);
+					uint64_t sw = (sRow << 1) | (south[x - 1] >> 63);
+					uint64_t se = (sRow >> 1) | (south[x + 1] << 63);
+
+					/* Bit-sliced saturating 3-bit adder over 64 lanes;    */
+					/* once bit2 is set, the count is >= MAX_ADJ.          */
+					uint64_t b0 = nRow ^ sRow;
+					uint64_t b1 = nRow & sRow;
+					uint64_t b2 = 0;
+					uint64_t carry0, carry1;
+					uint64_t deleted;
+
+					CSA(e);
+					CSA(w);
+					CSA(ne);
+					CSA(nw);
+					CSA(se);
+					CSA(sw);
+
+					deleted = self & ~b2;
+					if (deleted)
+					{
+						base[x] = self & b2;
+						totalDeletions += __builtin_popcountll(deleted);
+						rowChanged = 1;
+					}
+				}
+
+				nextDirty[y] = (unsigned char) rowChanged;
+				running |= rowChanged;
+
+				/* Swap the row snapshots */
+				swp = prevOrig;
+				prevOrig = curOrig;
+				curOrig = swp;
+				prevProcessed = 1;
+			}
+
+			{
+				unsigned char *tmp = dirty;
+				dirty = nextDirty;
+				nextDirty = tmp;
+				memset(nextDirty, 0, Y + 2);
+			}
+		}
+
+		printf("Result: %ld\n", totalDeletions);
+
+		free(g);
+		free(prevOrig);
+		free(curOrig);
+		free(dirty);
+		free(nextDirty);
+	}
 	return 0;
 }

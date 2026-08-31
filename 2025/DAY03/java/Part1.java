@@ -4,38 +4,33 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-private static final int DIGIT_LENGTH = 2;
-
+// k = 2 degenerates to a running max: best pair = max(bestSoFar, maxDigitSoFar * 10 + d).
+// Single pass over the raw bytes, all state in registers, no Stack, no boxing,
+// no split(), no toCharArray().
 void main(String[] args)
 {
+	final byte[] b = args[0].getBytes();
+	final int n = b.length;
 	int jolts = 0;
-	for (String line : args[0].split("\n"))
+	int best = 0;
+	int maxd = 0;
+
+	for (int i = 0; i < n; i++)
 	{
-		jolts += maxLexSub(line.toCharArray(), DIGIT_LENGTH);
+		final int d = b[i] - '0';
+		if (d >= 0)
+		{
+			best = Math.max(best, maxd * 10 + d);
+			maxd = Math.max(maxd, d);
+		}
+		else
+		{
+			jolts += best;
+			best = 0;
+			maxd = 0;
+		}
 	}
+	jolts += best;
+
 	IO.print("Result: " + jolts);
-}
-
-static private int maxLexSub(char[] digits, int k)
-{
-	Stack<Integer> stack = new Stack<>();
-	for (int i = 0; i < digits.length; i++)
-	{
-		while (!stack.empty() && digits[i] > digits[stack.peek()] && digits.length - i + stack.size() > k)
-		{
-			stack.pop();
-		}
-		if (stack.size() < k)
-		{
-			stack.push(i);
-		}
-	}
-
-	char[] weightedDigits = new char[k];
-	for (int i = k - 1; i >= 0; i--)
-	{
-		weightedDigits[i] = digits[stack.pop()];
-	}
-
-	return (weightedDigits[0] - '0') * 10 + (weightedDigits[1] - '0');
 }

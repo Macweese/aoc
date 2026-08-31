@@ -4,57 +4,90 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-private static final int MIN = 0;
-private static final int MAX = 1;
-
+// Zero-allocation byte-scan parse; intervals packed as (min << 11 | index) into one
+// long[] so the JDK's dual-pivot primitive sort does the heavy lifting (no boxed
+// Comparator, no ArrayList of long[2]); merged in one sweep; each ID resolved with a
+// branch-light bitwise binary search instead of a linear scan over all intervals.
 void main(String[] args)
 {
-	final String[] input = args[0].split("\n\n");
+	final byte[] b = args[0].getBytes();
+	final int n = b.length;
 
-	List<long[]> intervals = new ArrayList<>();
-	for (String interval : input[0].split("\n"))
+	long[] maxs = new long[2048];
+	long[] packed = new long[2048];
+	int cnt = 0;
+
+	int i = 0;
+	while (b[i] != '\n')
 	{
-		int separator = interval.indexOf('-');
-		long min = Long.parseLong(interval.substring(0, separator));
-		long max = Long.parseLong(interval.substring(separator + 1));
-
-		intervals.add(new long[]{min, max});
-	}
-
-	intervals.sort(Comparator.comparingLong(i -> i[MIN]));
-	List<long[]> merged = new ArrayList<>();
-	for (long[] interval : intervals)
-	{
-		if (merged.isEmpty())
+		long lo = 0L;
+		while (b[i] != '-')
 		{
-			merged.add(interval);
-			continue;
+			lo = lo * 10 + b[i++] - '0';
 		}
-
-		long[] last = merged.getLast();
-		if ((last[MAX] + 1) >= interval[MIN])
+		i++;
+		long hi = 0L;
+		while (b[i] != '\n')
 		{
-			last[MAX] = Math.max(last[MAX], interval[MAX]);
+			hi = hi * 10 + b[i++] - '0';
+		}
+		i++;
+		packed[cnt] = (lo << 11) | cnt;
+		maxs[cnt++] = hi;
+	}
+	i++; // blank line
+
+	java.util.Arrays.sort(packed, 0, cnt);
+
+	// Merge in one sweep over sort order.
+	final long[] mMin = new long[cnt];
+	final long[] mMax = new long[cnt];
+	int m = 0;
+	long curMin = packed[0] >>> 11;
+	long curMax = maxs[(int) (packed[0] & 2047)];
+	for (int j = 1; j < cnt; j++)
+	{
+		final long mn = packed[j] >>> 11;
+		final long mx = maxs[(int) (packed[j] & 2047)];
+		if (mn <= curMax + 1)
+		{
+			curMax = Math.max(curMax, mx);
 		}
 		else
 		{
-			merged.add(interval);
+			mMin[m] = curMin;
+			mMax[m++] = curMax;
+			curMin = mn;
+			curMax = mx;
 		}
 	}
+	mMin[m] = curMin;
+	mMax[m++] = curMax;
 
+	final int steps = Integer.highestOneBit(m);
 	int count = 0;
-	for (String id : input[1].split("\n"))
+	while (i < n)
 	{
-		long i = Long.parseLong(id);
-		for (long[] range : merged)
+		long v = 0L;
+		while (i < n && b[i] != '\n')
 		{
-			long min = range[MIN];
-			long max = range[MAX];
-			if (min <= i && i <= max)
+			v = v * 10 + b[i++] - '0';
+		}
+		i++;
+
+		// Bitwise binary search: rightmost merged interval with min <= v.
+		int pos = -1;
+		for (int step = steps; step > 0; step >>= 1)
+		{
+			final int np = pos + step;
+			if (np < m && mMin[np] <= v)
 			{
-				count++;
-				break;
+				pos = np;
 			}
+		}
+		if (pos >= 0 && v <= mMax[pos])
+		{
+			count++;
 		}
 	}
 

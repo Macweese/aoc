@@ -4,43 +4,57 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+// An invalid ID with 2k digits is h * (10^k + 1) for h in [10^(k-1), 10^k - 1].
+// Clamping h into [min, max] turns the whole range check into a closed-form
+// arithmetic series: O(1) per digit-width, zero iteration over candidates.
+private static final long[] P10 = {
+	1L, 10L, 100L, 1_000L, 10_000L, 100_000L, 1_000_000L, 10_000_000L, 100_000_000L,
+	1_000_000_000L, 10_000_000_000L, 100_000_000_000L, 1_000_000_000_000L, 10_000_000_000_000L,
+	100_000_000_000_000L, 1_000_000_000_000_000L, 10_000_000_000_000_000L,
+	100_000_000_000_000_000L, 1_000_000_000_000_000_000L
+};
+
 void main(String[] args)
 {
-	String[] intervals = args[0].split(",");
+	final byte[] b = args[0].getBytes();
+	long result = 0L;
+	long cur = 0L;
+	long min = 0L;
 
-	long result = 0;
-	for (String interval : intervals)
+	for (int i = 0, n = b.length; i < n; i++)
 	{
-		String[] r = interval.split("-");
-		result += aggregateInvalidIDs(Long.parseLong(r[0]), Long.parseLong(r[1]));
+		final int d = b[i] - '0';
+		if (d >= 0)
+		{
+			cur = cur * 10 + d;
+		}
+		else if (d == -3) // '-'
+		{
+			min = cur;
+			cur = 0L;
+		}
+		else // ','
+		{
+			result += aggregateInvalidIDs(min, cur);
+			cur = 0L;
+		}
 	}
+	result += aggregateInvalidIDs(min, cur);
 
 	IO.println("Invalid IDs Result:\n" + result);
 }
 
 public static long aggregateInvalidIDs(long min, long max)
 {
-	long result = 0;
-	int minDigits = (int) (Math.log10(min) + 1);
-	int maxDigits = (int) (Math.log10(max) + 1);
-
-	for (int digits = (minDigits % 2 == 0 ? minDigits : minDigits + 1); digits <= maxDigits; digits += 2)
+	long result = 0L;
+	for (int k = 1; k <= 9; k++)
 	{
-		int d = digits / 2;
-		long l = (long) Math.pow(10, d - 1);
-		long r = (long) Math.pow(10, d) - 1;
-		for (long i = l; i <= r; i++)
+		final long m = P10[k] + 1;
+		final long lo = Math.max(P10[k - 1], (min + m - 1) / m);
+		final long hi = Math.min(P10[k] - 1, max / m);
+		if (lo <= hi)
 		{
-			long seq = i * (long) Math.pow(10, d) + i;
-			if (seq < min)
-			{
-				continue;
-			}
-			if (seq > max)
-			{
-				break;
-			}
-			result += seq;
+			result += m * (((lo + hi) * (hi - lo + 1)) >> 1);
 		}
 	}
 	return result;
