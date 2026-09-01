@@ -555,6 +555,11 @@ public class FastIO extends PrintWriter
 			if (p > b.length - a.length)
 			{
 				drain();
+				if (a.length >= b.length)
+				{
+					os.write(a);
+					return;
+				}
 			}
 			System.arraycopy(a, 0, b, p, a.length);
 			p += a.length;
