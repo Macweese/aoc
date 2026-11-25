@@ -1,0 +1,8 @@
+Requirements
+
+Solutions target specific toolchains and hardware, and may not build or run elsewhere:
+
+- Java:   JDK 25.0.1+8 (developed on GraalVM CE 25.0.1).  2025 solutions are compact source files with instance main methods, so older JDKs need --enable-preview or won't compile.  Most depend on the shared `FastIO` utility class.
+- C/C++:  GCC with -O3 -march=native. Several solutions use x86 SIMD (SSSE3, AVX2, AVX-512) and GCC vector extensions, with scalar fallbacks where noted.  Non-x86 or non-GCC builds may need changes.
+- Assembly:  NASM, Windows x64 only (2024 Days 2-3).  No C runtime, kernel32 only; link with MSVC `link` or MinGW `gcc -nostartfiles`.  Requires SSE2, BMI1 and POPCNT (Haswell / Zen 1 or newer).
+- Timings in the write-ups are from my own machines and are only indicative.
